@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>体験会予約</title>
+  <script src="https://static.line-scdn.net/liff/edge/2/sdk.js"></script>
+  <style>
+    :root { --gap: 12px; }
+    body { font-family: system-ui, -apple-system, sans-serif; margin: 0; padding: 16px; }
+    .card { max-width: 780px; margin: 0 auto; padding: 16px; border: 1px solid #eee; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,.04); }
+    .row { display: flex; gap: var(--gap); margin-bottom: var(--gap); flex-wrap: wrap; }
+    .col { flex: 1 1 240px; display: flex; flex-direction: column; }
+    label { font-size: 14px; color: #333; margin-bottom: 6px; }
+    select, input, textarea, button { padding: 10px; font-size: 16px; border: 1px solid #ccc; border-radius: 8px; }
+    textarea { width: 100%; }
+    button { cursor: pointer; }
+    .muted { color: #666; font-size: 12px; }
+    .actions { display: flex; gap: var(--gap); flex-wrap: wrap; }
+    .success { background: #e6ffed; border: 1px solid #b7f0c0; color: #0f5132; padding: 10px; border-radius: 8px; }
+    .error { background: #fff1f2; border: 1px solid #fecdd3; color: #9f1239; padding: 10px; border-radius: 8px; }
+    .list { display: flex; flex-direction: column; gap: 8px; }
+    .item { border: 1px solid #eee; border-radius: 10px; padding: 10px; display: flex; justify-content: space-between; align-items: center; }
+    .hidden { display:none; }
+    .cap { font-size: 13px; color:#333; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h2>体験会予約</h2>
+    <p class="muted">LINEでログイン済みの方のみ予約できます。</p>
+
+    <div id="alert" class="hidden"></div>
+
+    <div class="row">
+      <div class="col">
+        <label for="venue">会場</label>
+        <select id="venue"></select>
+      </div>
+      <div class="col">
+        <label for="slot">時間帯</label>
+        <select id="slot"></select>
+        <small id="capInfo" class="cap"></small>
+      </div>
+      <div class="col">
+        <label for="childrenCount">お子様の人数</label>
+        <select id="childrenCount"></select>
+      </div>
+    </div>
+
+    <div id="formFields"></div>
+    <div id="childrenBox"></div>
+
+    <div class="actions">
+      <button id="reserveBtn">予約する</button>
+      <button id="checkBtn">予約確認</button>
+    </div>
+
+    <div id="result" class="hidden" style="margin-top:16px;"></div>
+    <div id="myList" class="list hidden" style="margin-top:16px;"></div>
+  </div>
+
+  <script>
+  const LIFF_ID = "2008338477-qvNp7aV4";      // ←差し替え
+  const GAS_ENDPOINT = "https://script.google.com/macros/s/AKfycbzHNeJmZz0bgwrIeOAFTg45MquuWqj_mHp5yUH08uPSlkMz19WKHKKGN1FQfJeDlA4l/exec"; // ←差し替え
+
+  let profile=null, slots=[], questions=[], settings={maxChildren:3};
+  const el=id=>document.getElementById(id);
+  const showAlert=(type,msg)=>{ const box=el('alert'); box.className=type==='error'?'error':'success'; box.textContent=msg; box.classList.remove('hidden'); setTimeout(()=>box.classList.add('hidden'),4000); };
+
+  const groupByVenue=list=>{ const m=new Map(); list.forEach(s=>{ if(!m.has(s.venueId)) m.set(s.venueId,{venueName:s.venueName,slots:[]}); m.get(s.venueId).slots.push(s); }); return m; };
+  const fetchBootstrap=()=> fetch(`${GAS_ENDPOINT}?action=bootstrap`).then(r=>r.json());
+  const refreshSlots=()=> fetch(`${GAS_ENDPOINT}?action=listSlots`).then(r=>r.json());
+
+  const renderVenuesAndSlots=(data)=>{
+    slots = data.slots; questions = data.questions; settings = data.settings||settings;
+    // 会場
+    const venues = groupByVenue(slots); const venueSel = el('venue'); venueSel.innerHTML='';
+    for(const [venueId,info] of venues.entries()){ const o=document.createElement('option'); o.value=venueId; o.textContent=info.venueName; venueSel.appendChild(o); }
+    // 人数
+    const countSel=el('childrenCount'); countSel.innerHTML=''; for(let i=1;i<=settings.maxChildren;i++){ const o=document.createElement('option'); o.value=i; o.textContent=i; countSel.appendChild(o); }
+    // スロット
+    const renderSlotOptions=()=>{
+      const selectedVenue=venueSel.value; const slotSel=el('slot'); const capInfo=el('capInfo'); slotSel.innerHTML='';
+      const list=slots.filter(s=>s.venueId===selectedVenue);
+      list.forEach(s=>{ const o=document.createElement('option'); o.value=s.slotId; o.dataset.capacity=s.capacity; o.dataset.remaining=s.remaining; o.textContent=`${s.slotLabel}（残${s.remaining} / 定員${s.capacity}）`; if(s.remaining<=0) o.disabled=true; slotSel.appendChild(o); });
+      updateCapInfo();
+    };
+    const updateCapInfo=()=>{
+      const slotSel=el('slot'); const capInfo=el('capInfo');
+      if(!slotSel.value){ capInfo.textContent=''; return; }
+      const opt = slotSel.selectedOptions[0];
+      capInfo.textContent = `残り ${opt.dataset.remaining} / 定員 ${opt.dataset.capacity}`;
+    };
+    venueSel.onchange=renderSlotOptions; el('slot').onchange=()=>{ const selected=el('slot').selectedOptions[0]; el('capInfo').textContent=`残り ${selected.dataset.remaining} / 定員 ${selected.dataset.capacity}`; };
+    renderSlotOptions();
+  };
+
+  const createInput=(q,prefix='form')=>{
+    const wrap=document.createElement('div'); wrap.className='row';
+    const col=document.createElement('div'); col.className='col full';
+    const label=document.createElement('label'); label.textContent=q.label + (q.required?' *':''); col.appendChild(label);
+    let input;
+    if(q.type==='select'){ input=document.createElement('select'); q.options.forEach(v=>{ const o=document.createElement('option'); o.value=v; o.textContent=v; input.appendChild(o); }); }
+    else if(q.type==='textarea'){ input=document.createElement('textarea'); input.rows=3; }
+    else { input=document.createElement('input'); input.type='text'; }
+    input.id=`${prefix}_${q.fieldId}`; if(q.placeholder) input.placeholder=q.placeholder; input.dataset.required=q.required?'1':'0';
+    col.appendChild(input); wrap.appendChild(col); return wrap;
+  };
+
+  const renderFormFields=()=>{ const formWrap=el('formFields'); formWrap.innerHTML=''; questions.filter(q=>q.scope==='form').forEach(q=>{ formWrap.appendChild(createInput(q,'form')); }); };
+  const renderChildren=()=>{ const count=Number(el('childrenCount').value||1); const box=el('childrenBox'); box.innerHTML=''; for(let i=1;i<=count;i++){ const group=document.createElement('div'); group.className='card'; group.style.marginTop='8px'; group.innerHTML=`<h3 style="margin-top:0; font-size:16px;">お子様 ${i}人目</h3>`; questions.filter(q=>q.scope==='child').forEach(q=>{ group.appendChild(createInput(q,`child${i}`)); }); box.appendChild(group);} };
+
+  const collectAnswers=()=>{
+    const formAns={}; questions.filter(q=>q.scope==='form').forEach(q=>{ const v=(el(`form_${q.fieldId}`).value||'').trim(); if(q.required && !v) throw new Error(`「${q.label}」を入力してください`); formAns[q.fieldId]=v; });
+    const children=[]; const count=Number(el('childrenCount').value||1); for(let i=1;i<=count;i++){ const rec={}; questions.filter(q=>q.scope==='child').forEach(q=>{ const v=(el(`child${i}_${q.fieldId}`).value||'').trim(); if(q.required && !v) throw new Error(`お子様${i}人目：「${q.label}」を入力してください`); rec[q.fieldId]=v; }); children.push(rec); }
+    return { form: formAns, children };
+  };
+
+  async function init(){
+    await liff.init({liffId:LIFF_ID}); if(!liff.isLoggedIn()) return liff.login(); profile=await liff.getProfile();
+    const boot=await fetchBootstrap(); renderVenuesAndSlots(boot); renderFormFields(); renderChildren();
+    el('childrenCount').addEventListener('change', renderChildren);
+
+    el('reserveBtn').addEventListener('click', async ()=>{
+      try{
+        const venueId=el('venue').value; const venueName=el('venue').selectedOptions[0].textContent; const slotId=el('slot').value; const slotLabel=el('slot').selectedOptions[0].textContent.replace(/（.*?）/,'');
+        const answers=collectAnswers();
+        const payload={ action:'reserve', userId:profile.userId, displayName:profile.displayName, venueId, venueName, slotId, slotLabel, answers };
+        const r=await fetch(GAS_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)}); const j=await r.json();
+        if(j.ok){
+          el('result').className='success'; el('result').classList.remove('hidden'); el('result').innerHTML=`予約が完了しました。<br>予約番号: <strong>${j.reservationId}</strong><br>人数: ${j.count}名`;
+          showAlert('success','予約を受け付けました');
+          const latest=await refreshSlots(); renderVenuesAndSlots({ slots:latest, questions, settings });
+        } else { throw new Error(j.error||'unknown_error'); }
+      }catch(e){ const msg=String(e.message||e); const map={ slot_insufficient:'選択した時間帯の残席が足りません。', already_reserved:'同じ時間帯で既に予約があります。' }; showAlert('error', map[msg]||`予約に失敗しました: ${msg}`); }
+    });
+
+    el('checkBtn').addEventListener('click', async ()=>{
+      const url=`${GAS_ENDPOINT}?action=myReservations&userId=${encodeURIComponent(profile.userId)}`; const r=await fetch(url); const list=await r.json();
+      const box=el('myList'); box.innerHTML=''; if(!Array.isArray(list)||list.length===0){ box.classList.remove('hidden'); box.innerHTML='<div class="item">予約はありません</div>'; return; }
+      list.forEach(item=>{
+        const div=document.createElement('div'); div.className='item';
+        const left=document.createElement('div');
+        const childText=(item.children||[]).map((c,i)=>`#${i+1} ${(c.childName||'')} (${c.grade||''})`).join(' ／ ');
+        left.innerHTML=`<strong>${item.venueName}</strong><br><small>${item.slotLabel}</small><br><small>${childText}</small>`;
+        const btn=document.createElement('button'); btn.textContent='キャンセル'; btn.onclick=async()=>{
+          if(!confirm('この予約（全員分）をキャンセルしますか？')) return;
+          const res=await fetch(GAS_ENDPOINT,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({action:'cancel',reservationId:item.reservationId,userId:profile.userId})}); const j=await res.json();
+          if(j.ok){ showAlert('success','キャンセルしました'); div.remove(); const latest=await refreshSlots(); renderVenuesAndSlots({ slots:latest, questions, settings }); }
+          else showAlert('error','キャンセルに失敗しました');
+        };
+        div.appendChild(left); div.appendChild(btn); box.appendChild(div);
+      });
+      box.classList.remove('hidden');
+    });
+  }
+
+  init();
+  </script>
+</body>
+</html>
